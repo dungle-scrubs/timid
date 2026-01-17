@@ -1,0 +1,32 @@
+name: Obstickian
+options:
+  bundleIdPrefix: com.kevin
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  DEVELOPMENT_TEAM: ""
+  CODE_SIGN_IDENTITY: "-"
+  CODE_SIGN_STYLE: Manual
+  PRODUCT_NAME: Obstickian
+  MARKETING_VERSION: "1.0.0"
+  CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  Obstickian:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+    resources:
+      - Resources
+    settings:
+      INFOPLIST_FILE: Resources/Info.plist
+      ENABLE_HARDENED_RUNTIME: false
+      PRODUCT_BUNDLE_IDENTIFIER: com.kevin.obstickian
+    entitlements:
+      path: Resources/Obstickian.entitlements
+      properties:
+        com.apple.security.automation.apple-events: true
