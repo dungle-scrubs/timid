@@ -7,6 +7,7 @@ struct MarkdownEditor: NSViewRepresentable {
     var vimEnabled: Bool
     var onTextChange: (String) -> Void
     var onEscape: (() -> Void)?
+    var onReady: ((VimTextView) -> Void)? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         vimLog("[makeNSView] called, text.count=\(text.count)")
@@ -75,6 +76,8 @@ struct MarkdownEditor: NSViewRepresentable {
 
         // Wire up escape in normal mode to close
         textView.onEscapeInNormalMode = onEscape
+
+        onReady?(textView)
 
         return scrollView
     }
