@@ -275,6 +275,7 @@ struct PanelContentView: View {
     @State private var vimMode: VimMode = .normal
     @State private var vimEnabled: Bool = true
     @State private var editorView: VimTextView?
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -287,12 +288,13 @@ struct PanelContentView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
-                    SearchFieldView(
-                        text: $panelState.searchQuery,
-                        isFirstResponder: $panelState.isSearchFieldFocused,
-                        placeholder: "Search notes (⌘P)",
-                        onSubmit: { openFirstSearchResult() }
-                    )
+                    TextField("Search notes (⌘P)", text: $panelState.searchQuery)
+                        .textFieldStyle(.plain)
+                        .focused($isSearchFieldFocused)
+                        .onSubmit { openFirstSearchResult() }
+                        .onChange(of: isSearchFieldFocused) { isFocused in
+                            panelState.isSearchFieldFocused = isFocused
+                        }
                     Button("Cancel") { panelState.closeSearch() }
                         .buttonStyle(.plain)
                         .foregroundColor(.secondary)
@@ -302,7 +304,7 @@ struct PanelContentView: View {
                 .onExitCommand { panelState.closeSearch() }
                 .onAppear {
                     DispatchQueue.main.async {
-                        panelState.isSearchFieldFocused = true
+                        isSearchFieldFocused = true
                     }
                 }
             } else {
@@ -430,8 +432,11 @@ struct PanelContentView: View {
         }
         .onChange(of: panelState.isSearchVisible) { isVisible in
             if isVisible {
-                panelState.isSearchFieldFocused = true
+                panelState.searchQuery = ""
+                panelState.selectedIndex = 0
+                isSearchFieldFocused = true
             } else {
+                isSearchFieldFocused = false
                 focusEditor()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     focusEditor()
@@ -643,6 +648,7 @@ final class PanelState: ObservableObject {
             closeSearch()
         } else {
             isSearchVisible = true
+            searchQuery = ""
             selectedIndex = 0
             isSearchFieldFocused = true
             vimLog("[search] open")
@@ -729,76 +735,6 @@ struct SearchResultsList: View {
                     }
                 }
                 .padding(8)
-            }
-        }
-    }
-}
-
-struct SearchFieldView: NSViewRepresentable {
-    @Binding var text: String
-    @Binding var isFirstResponder: Bool
-    let placeholder: String
-    let onSubmit: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, isFirstResponder: $isFirstResponder, onSubmit: onSubmit)
-    }
-
-    func makeNSView(context: Context) -> NSSearchField {
-        let searchField = NSSearchField(string: text)
-        searchField.placeholderString = placeholder
-        searchField.isBezeled = false
-        searchField.focusRingType = .none
-        searchField.target = context.coordinator
-        searchField.action = #selector(Coordinator.onAction(_:))
-        searchField.delegate = context.coordinator
-        return searchField
-    }
-
-    func updateNSView(_ nsView: NSSearchField, context: Context) {
-        if !context.coordinator.isEditing && nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-        if isFirstResponder {
-            DispatchQueue.main.async {
-                nsView.window?.makeFirstResponder(nsView)
-            }
-        }
-    }
-
-    final class Coordinator: NSObject, NSSearchFieldDelegate {
-        private var text: Binding<String>
-        private var isFirstResponder: Binding<Bool>
-        private let onSubmit: () -> Void
-        var isEditing: Bool = false
-
-        init(text: Binding<String>, isFirstResponder: Binding<Bool>, onSubmit: @escaping () -> Void) {
-            self.text = text
-            self.isFirstResponder = isFirstResponder
-            self.onSubmit = onSubmit
-        }
-
-        @objc func onAction(_ sender: NSSearchField) {
-            text.wrappedValue = sender.stringValue
-        }
-
-        func controlTextDidBeginEditing(_ notification: Notification) {
-            isFirstResponder.wrappedValue = true
-            isEditing = true
-        }
-
-        func controlTextDidEndEditing(_ notification: Notification) {
-            isFirstResponder.wrappedValue = false
-            isEditing = false
-            if let movement = notification.userInfo?["NSTextMovement"] as? Int,
-               movement == NSReturnTextMovement {
-                onSubmit()
-            }
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            if let field = notification.object as? NSSearchField {
-                text.wrappedValue = field.stringValue
             }
         }
     }
