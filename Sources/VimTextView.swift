@@ -6,6 +6,7 @@ final class VimTextView: NSTextView {
 
     private var isSyncingFromVim = false
     private var blockCursorRect: NSRect?
+    private var lastGPressTime: TimeInterval = 0
 
     var onEscapeInNormalMode: (() -> Void)?
 
@@ -99,6 +100,14 @@ final class VimTextView: NSTextView {
             return
         }
 
+        if handleScrollKeys(event) {
+            return
+        }
+
+        if bridge.mode == .normal, handleNormalModeNavigation(event) {
+            return
+        }
+
         // In normal mode, Escape does nothing (use hotkey to close)
         if bridge.mode == .normal && event.keyCode == 53 {
             return
@@ -116,6 +125,98 @@ final class VimTextView: NSTextView {
         } else {
             super.keyDown(with: event)
         }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        vimLog("[VimTextView] becomeFirstResponder ok=\(ok)")
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        vimLog("[VimTextView] resignFirstResponder ok=\(ok)")
+        return ok
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window = window else { return }
+        DispatchQueue.main.async {
+            window.makeFirstResponder(self)
+            vimLog("[VimTextView] viewDidMoveToWindow -> makeFirstResponder")
+        }
+    }
+
+    private func handleScrollKeys(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.contains(.control) else {
+            return false
+        }
+
+        if event.keyCode == 32 { // kVK_ANSI_U
+            scrollHalfPage(direction: -1)
+            return true
+        }
+        if event.keyCode == 2 { // kVK_ANSI_D
+            scrollHalfPage(direction: 1)
+            return true
+        }
+
+        return false
+    }
+
+    private func scrollHalfPage(direction: CGFloat) {
+        guard let scrollView = enclosingScrollView else { return }
+        let contentView = scrollView.contentView
+        let visibleHeight = contentView.bounds.height
+        let delta = visibleHeight * 0.5 * direction
+
+        var newOrigin = contentView.bounds.origin
+        newOrigin.y += delta
+
+        if let documentView = scrollView.documentView {
+            let maxY = max(0, documentView.bounds.height - visibleHeight)
+            newOrigin.y = min(max(0, newOrigin.y), maxY)
+        } else {
+            newOrigin.y = max(0, newOrigin.y)
+        }
+
+        contentView.scroll(to: newOrigin)
+        scrollView.reflectScrolledClipView(contentView)
+    }
+
+    private func handleNormalModeNavigation(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 5, modifiers.contains(.shift) { // G
+            moveCursorToEnd()
+            return true
+        }
+        if event.keyCode == 5, modifiers.isDisjoint(with: [.command, .control, .option, .shift]) { // g
+            let now = Date().timeIntervalSinceReferenceDate
+            if now - lastGPressTime < 0.4 {
+                moveCursorToStart()
+                lastGPressTime = 0
+                return true
+            }
+            lastGPressTime = now
+        }
+        return false
+    }
+
+    private func moveCursorToStart() {
+        setSelectedRange(NSRange(location: 0, length: 0))
+        scrollRangeToVisible(NSRange(location: 0, length: 0))
+        syncCursorToVim()
+        updateCursor()
+    }
+
+    private func moveCursorToEnd() {
+        let end = string.count
+        setSelectedRange(NSRange(location: end, length: 0))
+        scrollRangeToVisible(NSRange(location: max(0, end - 1), length: 0))
+        syncCursorToVim()
+        updateCursor()
     }
 
     func syncToVimBuffer() {
