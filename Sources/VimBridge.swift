@@ -2,15 +2,25 @@ import AppKit
 import libvim
 
 func vimLog(_ message: String) {
-    let logFile = "/tmp/timid_vim.log"
+    let fm = FileManager.default
+    let logsDir = fm.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library")
+        .appendingPathComponent("Logs")
+        .appendingPathComponent("Timid")
+    let logURL = logsDir.appendingPathComponent("debug.log")
+
+    try? fm.createDirectory(at: logsDir, withIntermediateDirectories: true)
+
     let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
     let entry = "[\(timestamp)] \(message)\n"
-    if let handle = FileHandle(forWritingAtPath: logFile) {
+    if let handle = try? FileHandle(forWritingTo: logURL) {
         handle.seekToEndOfFile()
-        handle.write(entry.data(using: .utf8)!)
-        handle.closeFile()
+        if let data = entry.data(using: .utf8) {
+            handle.write(data)
+        }
+        try? handle.close()
     } else {
-        FileManager.default.createFile(atPath: logFile, contents: entry.data(using: .utf8))
+        _ = fm.createFile(atPath: logURL.path, contents: entry.data(using: .utf8))
     }
 }
 
