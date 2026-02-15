@@ -23,21 +23,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkey()
     }
 
+    /// Configures the menu bar status item.
+    /// Left-click toggles the panel; right-click shows the context menu.
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Timid")
-            button.action = #selector(togglePanel)
+            button.action = #selector(statusItemClicked(_:))
             button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Toggle Panel (⌃⌥N)", action: #selector(togglePanel), keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-
-        statusItem?.menu = menu
     }
 
     private func setupPanel() {
@@ -47,6 +43,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupHotkey() {
         hotkeyManager = HotkeyManager { [weak self] in
             self?.togglePanel()
+        }
+    }
+
+    /// Routes status item clicks: left-click toggles panel, right-click shows menu.
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp {
+            let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Toggle Panel (⌃⌥N)", action: #selector(togglePanel), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+            // Temporarily set menu so it pops up, then clear so left-click action works again
+            statusItem?.menu = menu
+            statusItem?.button?.performClick(nil)
+            statusItem?.menu = nil
+        } else {
+            togglePanel()
         }
     }
 
