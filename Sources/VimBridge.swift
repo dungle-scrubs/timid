@@ -1,7 +1,17 @@
 import AppKit
 import libvim
 
+#if DEBUG
+private let loggingEnabled = true
+#else
+private let loggingEnabled = false
+#endif
+
+/// Writes a timestamped message to ~/Library/Logs/Timid/debug.log.
+/// Only active in DEBUG builds to avoid disk I/O in release.
 func vimLog(_ message: String) {
+    guard loggingEnabled else { return }
+
     let fm = FileManager.default
     let logsDir = fm.homeDirectoryForCurrentUser
         .appendingPathComponent("Library")
@@ -34,6 +44,8 @@ enum VimMode: String {
     case replace = "REPLACE"
 }
 
+/// Wraps libvim to provide a vim state machine for text editing.
+/// Manages mode transitions, buffer sync, and cursor positioning.
 final class VimBridge {
     var mode: VimMode = .normal
     var onModeChange: ((VimMode) -> Void)?
@@ -59,66 +71,53 @@ final class VimBridge {
         vimLog("[VimBridge.init] Initialization complete")
     }
 
+    deinit {
+        // Clear callbacks to prevent dangling references
+        onModeChange = nil
+        onBufferChange = nil
+        onCursorChange = nil
+        vimSetBufferUpdateCallback(nil)
+    }
+
+    /// Syncs text from the NSTextView into the vim buffer.
+    /// No-op if text hasn't changed since last sync.
+    /// @param text The current text content from the text view.
     func syncFromTextView(_ text: String) {
-        vimLog("[syncFromTextView] called with text: '\(text.prefix(50))...', lastKnownText: '\(lastKnownText.prefix(50))...'")
-        guard isInitialized else {
-            vimLog("[syncFromTextView] not initialized, skipping")
-            return
-        }
-        guard text != lastKnownText else {
-            vimLog("[syncFromTextView] text == lastKnownText, skipping")
-            return
-        }
+        guard isInitialized, text != lastKnownText else { return }
         lastKnownText = text
 
         let buf = vimBufferGetCurrent()
         let lines = text.components(separatedBy: "\n")
         let lineCount = vimBufferGetLineCount(buf)
 
-        vimLog("[syncFromTextView] buf=\(buf), setting \(lines.count) lines, old lineCount: \(lineCount)")
-
-        // Clear buffer first by deleting all lines
         if lineCount > 0 {
-            vimLog("[syncFromTextView] deleting existing lines")
             vimBufferSetLines(buf, 0, lineCount, [], 0)
         }
-
-        // Insert new lines
-        vimLog("[syncFromTextView] inserting new lines")
         vimBufferSetLines(buf, 0, 0, lines, lines.count)
-
-        let newLineCount = vimBufferGetLineCount(buf)
-        vimLog("[syncFromTextView] after set, lineCount: \(newLineCount)")
     }
 
+    /// Processes a key event through vim and updates mode/cursor state.
+    /// @param event The NSEvent to translate and send to vim.
+    /// @returns true if vim handled the key.
     func handleKey(_ event: NSEvent) -> Bool {
-        guard isInitialized else {
-            vimLog("[VimBridge] Not initialized!")
-            return false
-        }
+        guard isInitialized else { return false }
 
         let oldMode = mode
         var handled = false
 
         if let special = specialKeyString(for: event) {
-            vimLog("[VimBridge] Sending special key: \(special)")
             vimKey(special)
             handled = true
         } else if let chars = event.charactersIgnoringModifiers, !chars.isEmpty {
             let modifiers = event.modifierFlags
 
             if modifiers.contains(.control), let char = chars.first {
-                let ctrlKey = "<C-\(char)>"
-                vimLog("[VimBridge] Sending ctrl key: \(ctrlKey)")
-                vimKey(ctrlKey)
+                vimKey("<C-\(char)>")
                 handled = true
             } else if modifiers.contains(.option), let char = chars.first {
-                let altKey = "<M-\(char)>"
-                vimLog("[VimBridge] Sending alt key: \(altKey)")
-                vimKey(altKey)
+                vimKey("<M-\(char)>")
                 handled = true
             } else {
-                vimLog("[VimBridge] Sending chars: \(chars)")
                 for char in chars {
                     vimInput(String(char))
                 }
@@ -127,7 +126,6 @@ final class VimBridge {
         }
 
         updateMode()
-        vimLog("[VimBridge] Mode after: \(mode), cursor: (\(vimCursorGetLine()), \(vimCursorGetColumn()))")
 
         if mode != oldMode {
             vimLog("[VimBridge] Mode changed: \(oldMode) -> \(mode)")
@@ -135,31 +133,28 @@ final class VimBridge {
         }
 
         onCursorChange?(Int(vimCursorGetLine()), Int(vimCursorGetColumn()))
-
         return handled
     }
 
+    /// @returns The full text content of the current vim buffer.
     func getCurrentBuffer() -> String {
         let buf = vimBufferGetCurrent()
         let lineCount = vimBufferGetLineCount(buf)
-        vimLog("[getCurrentBuffer] buf=\(buf), lineCount=\(lineCount)")
         var lines: [String] = []
 
         for i in 1...max(1, lineCount) {
-            let line = vimBufferGetLine(buf, i)
-            vimLog("[getCurrentBuffer] line \(i): '\(line)'")
-            lines.append(line)
+            lines.append(vimBufferGetLine(buf, i))
         }
 
-        let result = lines.joined(separator: "\n")
-        vimLog("[getCurrentBuffer] result: '\(result.prefix(50))...'")
-        return result
+        return lines.joined(separator: "\n")
     }
 
+    /// @returns Tuple of (line, column), both 1-indexed.
     func getCursorPosition() -> (line: Int, column: Int) {
         (Int(vimCursorGetLine()), Int(vimCursorGetColumn()))
     }
 
+    /// @returns Visual selection range if visual mode is active, nil otherwise.
     func getVisualRange() -> (start: (line: Int, col: Int), end: (line: Int, col: Int))? {
         guard vimVisualIsActive() else { return nil }
         let (start, end) = vimVisualGetRange()
@@ -169,10 +164,14 @@ final class VimBridge {
         )
     }
 
+    /// @returns Whether visual mode is currently active.
     func isVisualActive() -> Bool {
         vimVisualIsActive()
     }
 
+    /// Sets the vim cursor to the specified position.
+    /// @param line 1-indexed line number.
+    /// @param column 0-indexed column number.
     func setCursorPosition(line: Int, column: Int) {
         var pos = Vim.Position()
         pos.lnum = Int(line)
@@ -184,11 +183,7 @@ final class VimBridge {
         let state = vimGetMode()
 
         if state.contains(.insert) {
-            if state.contains(.replaceFlag) {
-                mode = .replace
-            } else {
-                mode = .insert
-            }
+            mode = state.contains(.replaceFlag) ? .replace : .insert
         } else if state.contains(.visual) || state.contains(.selectMode) {
             let visualType = vimVisualGetType()
             switch visualType {
@@ -214,6 +209,8 @@ final class VimBridge {
         }
     }
 
+    /// @param event The key event to translate.
+    /// @returns Vim-format special key string (e.g. "<Esc>", "<CR>"), or nil for regular keys.
     private func specialKeyString(for event: NSEvent) -> String? {
         switch event.keyCode {
         case 53: return "<Esc>"
