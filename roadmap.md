@@ -1,4 +1,4 @@
-# Obstickian Roadmap
+# Timid Roadmap
 
 ## Done
 - [x] Menu bar app with global hotkey (Ctrl+Option+N)

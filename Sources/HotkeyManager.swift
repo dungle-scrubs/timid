@@ -1,16 +1,23 @@
 import AppKit
 import Carbon.HIToolbox
 
+/// Registers a global hotkey (Ctrl+Option+N) using the Carbon Event API.
+/// Calls the provided callback when the hotkey is pressed.
 class HotkeyManager {
     private var eventHandler: EventHandlerRef?
+    private var hotKeyRef: EventHotKeyRef?
     private let callback: () -> Void
 
+    /// @param callback Closure invoked on the main thread when the hotkey is pressed.
     init(callback: @escaping () -> Void) {
         self.callback = callback
         registerHotkey()
     }
 
     deinit {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+        }
         if let handler = eventHandler {
             RemoveEventHandler(handler)
         }
@@ -22,10 +29,9 @@ class HotkeyManager {
         let keyCode: UInt32 = UInt32(kVK_ANSI_N)
 
         var hotKeyID = EventHotKeyID()
-        hotKeyID.signature = OSType(0x4F425354) // "OBST"
+        hotKeyID.signature = OSType(0x54494D44) // "TIMD"
         hotKeyID.id = 1
 
-        var hotKeyRef: EventHotKeyRef?
         let status = RegisterEventHotKey(
             keyCode,
             modifiers,
@@ -40,8 +46,10 @@ class HotkeyManager {
             return
         }
 
-        // Set up event handler
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
 
         let handler: EventHandlerUPP = { _, event, userData -> OSStatus in
             guard let userData = userData else { return OSStatus(eventNotHandledErr) }
