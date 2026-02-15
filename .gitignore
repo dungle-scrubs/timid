@@ -15,3 +15,9 @@ xcuserdata/
 
 # Debug logs
 logs/
+
+# Agent config
+.claude/
+.tallow/
+CLAUDE.md
+AGENTS.md
