@@ -1,5 +1,7 @@
 import AppKit
 
+/// Custom NSTextView that routes keystrokes through VimBridge in normal/visual modes
+/// and falls through to standard NSTextView behavior in insert mode.
 final class VimTextView: NSTextView {
     var vimBridge: VimBridge?
     var vimEnabled = true
@@ -23,7 +25,6 @@ final class VimTextView: NSTextView {
         if vimBridge?.mode == .insert {
             super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
         }
-        // Don't draw default cursor in normal mode
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -31,6 +32,8 @@ final class VimTextView: NSTextView {
         drawBlockCursor()
     }
 
+    /// Draws a translucent block cursor at the vim cursor position.
+    /// Uses font metrics for accurate character width instead of hardcoded values.
     private func drawBlockCursor() {
         guard let bridge = vimBridge, bridge.mode != .insert else { return }
 
@@ -43,31 +46,31 @@ final class VimTextView: NSTextView {
         let charIndex = min(offset, max(0, string.count - 1))
         let glyphIndex = layoutManager.glyphIndexForCharacter(at: charIndex)
 
-        // Get the line fragment rect for vertical positioning
-        var lineFragmentRect = NSRect.zero
-        layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+        let lineFragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
         let location = layoutManager.location(forGlyphAt: glyphIndex)
-        lineFragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
 
-        // Use monospace character width
-        let charWidth: CGFloat = 8.4  // Approximate width for 14pt monospace
+        // Measure character width from the actual font instead of hardcoding
+        let charWidth = measureCharWidth()
         let charHeight = lineFragmentRect.height
 
-        var cursorRect = NSRect(
+        let cursorRect = NSRect(
             x: lineFragmentRect.origin.x + location.x + textContainerInset.width,
             y: lineFragmentRect.origin.y + textContainerInset.height,
-            width: charWidth,
+            width: min(charWidth, charWidth),
             height: charHeight
         )
 
-        // Clamp width to single character
-        cursorRect.size.width = min(cursorRect.width, charWidth)
-
-        let cursorColor = NSColor.labelColor.withAlphaComponent(0.3)
-        cursorColor.setFill()
+        NSColor.labelColor.withAlphaComponent(0.3).setFill()
         NSBezierPath(rect: cursorRect).fill()
 
         blockCursorRect = cursorRect
+    }
+
+    /// @returns Width of a single character in the current monospace font.
+    private func measureCharWidth() -> CGFloat {
+        let currentFont = font ?? .monospacedSystemFont(ofSize: 14, weight: .regular)
+        let attrStr = NSAttributedString(string: "M", attributes: [.font: currentFont])
+        return attrStr.size().width
     }
 
     func updateCursor() {
@@ -86,7 +89,7 @@ final class VimTextView: NSTextView {
         // In insert mode, most keys pass through to NSTextView
         // except Escape which returns to normal mode
         if bridge.mode == .insert {
-            if event.keyCode == 53 { // Escape - exit insert mode
+            if event.keyCode == 53 { // Escape
                 bridge.syncFromTextView(string)
                 _ = bridge.handleKey(event)
                 let (line, col) = bridge.getCursorPosition()
@@ -95,7 +98,6 @@ final class VimTextView: NSTextView {
                 updateCursor()
                 return
             }
-            // Let NSTextView handle normal typing in insert mode
             super.keyDown(with: event)
             return
         }
@@ -108,16 +110,16 @@ final class VimTextView: NSTextView {
             return
         }
 
-        // In normal mode, Escape does nothing (use hotkey to close)
+        // Escape in normal mode closes the panel
         if bridge.mode == .normal && event.keyCode == 53 {
+            onEscapeInNormalMode?()
             return
         }
 
         // Sync current text TO vim before processing command
-        // This ensures vim has the latest text before operations like delete, yank, etc.
+        // so vim has the latest text for operations like delete, yank, etc.
         bridge.syncFromTextView(string)
 
-        // In normal/visual/command modes, vim handles everything
         let handled = bridge.handleKey(event)
 
         if handled {
@@ -144,15 +146,15 @@ final class VimTextView: NSTextView {
         guard let window = window else { return }
         DispatchQueue.main.async {
             window.makeFirstResponder(self)
-            vimLog("[VimTextView] viewDidMoveToWindow -> makeFirstResponder")
         }
     }
 
+    /// Handles Ctrl+U (half page up) and Ctrl+D (half page down).
+    /// Moves both the scroll viewport and the vim cursor position.
+    /// @returns true if the event was a scroll key and was handled.
     private func handleScrollKeys(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard modifiers.contains(.control) else {
-            return false
-        }
+        guard modifiers.contains(.control) else { return false }
 
         if event.keyCode == 32 { // kVK_ANSI_U
             scrollHalfPage(direction: -1)
@@ -166,8 +168,10 @@ final class VimTextView: NSTextView {
         return false
     }
 
+    /// Scrolls the view by half a page and moves the vim cursor to match.
+    /// @param direction -1 for up, 1 for down.
     private func scrollHalfPage(direction: CGFloat) {
-        guard let scrollView = enclosingScrollView else { return }
+        guard let scrollView = enclosingScrollView, let bridge = vimBridge else { return }
         let contentView = scrollView.contentView
         let visibleHeight = contentView.bounds.height
         let delta = visibleHeight * 0.5 * direction
@@ -184,8 +188,24 @@ final class VimTextView: NSTextView {
 
         contentView.scroll(to: newOrigin)
         scrollView.reflectScrolledClipView(contentView)
+
+        // Move vim cursor by the number of lines scrolled
+        let lineHeight = layoutManager?.defaultLineHeight(for: font ?? .monospacedSystemFont(ofSize: 14, weight: .regular)) ?? 17.0
+        let lineDelta = Int(round(delta / lineHeight))
+        let (currentLine, currentCol) = bridge.getCursorPosition()
+        let lines = string.components(separatedBy: "\n")
+        let newLine = max(1, min(lines.count, currentLine + lineDelta))
+        let lineLen = lines[newLine - 1].count
+        let newCol = min(currentCol, max(0, lineLen > 0 ? lineLen - 1 : 0))
+        bridge.setCursorPosition(line: newLine, column: newCol)
+
+        let offset = offsetForPosition(line: newLine, column: newCol)
+        setSelectedRange(NSRange(location: offset, length: 0))
+        updateCursor()
     }
 
+    /// Handles gg (go to top) and G (go to bottom) in normal mode.
+    /// @returns true if the event was handled.
     private func handleNormalModeNavigation(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if event.keyCode == 5, modifiers.contains(.shift) { // G
@@ -221,12 +241,13 @@ final class VimTextView: NSTextView {
 
     func syncToVimBuffer() {
         guard !isSyncingFromVim else { return }
-        // Don't sync to vim while in insert mode - vim doesn't know about keystrokes
-        // Sync happens when exiting insert mode
+        // Don't sync to vim while in insert mode — vim doesn't know about keystrokes.
+        // Sync happens when exiting insert mode.
         guard vimBridge?.mode != .insert else { return }
         vimBridge?.syncFromTextView(string)
     }
 
+    /// Pulls the current buffer and cursor/selection from vim into the text view.
     func syncFromVimBuffer() {
         guard let bridge = vimBridge else { return }
 
@@ -238,7 +259,6 @@ final class VimTextView: NSTextView {
             string = newText
         }
 
-        // Sync selection from vim
         if let visualRange = bridge.getVisualRange() {
             let startLine = visualRange.start.line
             let endLine = visualRange.end.line
@@ -247,20 +267,17 @@ final class VimTextView: NSTextView {
             let endOffset: Int
 
             if bridge.mode == .visualLine {
-                // V-LINE: select entire lines (text content only, including newline)
+                // V-LINE: select entire lines including content
                 let lines = string.components(separatedBy: "\n")
                 let minLine = min(startLine, endLine)
                 let maxLine = max(startLine, endLine)
                 startOffset = offsetForPosition(line: minLine, column: 0)
-                // End at the last character of the line + 1 (to include it)
                 if maxLine <= lines.count {
-                    let lineContent = maxLine <= lines.count ? lines[maxLine - 1] : ""
-                    endOffset = offsetForPosition(line: maxLine, column: lineContent.count)
+                    endOffset = offsetForPosition(line: maxLine, column: lines[maxLine - 1].count)
                 } else {
                     endOffset = string.count
                 }
             } else {
-                // Character-wise visual
                 startOffset = offsetForPosition(line: visualRange.start.line, column: visualRange.start.col)
                 endOffset = offsetForPosition(line: visualRange.end.line, column: visualRange.end.col + 1)
             }
@@ -268,7 +285,6 @@ final class VimTextView: NSTextView {
             let range = NSRange(location: min(startOffset, endOffset), length: abs(endOffset - startOffset))
             setSelectedRange(range)
         } else {
-            // Normal cursor position
             let (line, col) = bridge.getCursorPosition()
             let cursorOffset = offsetForPosition(line: line, column: col)
             setSelectedRange(NSRange(location: cursorOffset, length: 0))
@@ -277,15 +293,19 @@ final class VimTextView: NSTextView {
         updateCursor()
     }
 
+    /// Pushes the NSTextView's cursor position into vim.
     func syncCursorToVim() {
         guard let bridge = vimBridge else { return }
-
         let cursorLocation = selectedRange().location
         let (line, col) = positionForOffset(cursorLocation)
         bridge.setCursorPosition(line: line, column: col)
     }
 
-    private func offsetForPosition(line: Int, column: Int) -> Int {
+    /// Converts a 1-indexed (line, column) to a character offset in the string.
+    /// @param line 1-indexed line number.
+    /// @param column 0-indexed column within the line.
+    /// @returns Character offset clamped to string bounds.
+    func offsetForPosition(line: Int, column: Int) -> Int {
         let lines = string.components(separatedBy: "\n")
         var offset = 0
 
@@ -294,28 +314,27 @@ final class VimTextView: NSTextView {
         }
 
         if line >= 1 && line <= lines.count {
-            let lineContent = lines[line - 1]
-            offset += min(column, lineContent.count)
+            offset += min(column, lines[line - 1].count)
         }
 
         return min(offset, string.count)
     }
 
+    /// Converts a character offset to a 1-indexed (line, column) position.
+    /// @param offset Character offset in the string.
+    /// @returns Tuple of (line, column), line is 1-indexed.
     private func positionForOffset(_ offset: Int) -> (line: Int, column: Int) {
         let lines = string.components(separatedBy: "\n")
         var currentOffset = 0
-        var line = 1
 
         for (index, lineContent) in lines.enumerated() {
-            let lineLength = lineContent.count + 1 // +1 for newline
+            let lineLength = lineContent.count + 1
 
             if currentOffset + lineLength > offset {
-                let column = offset - currentOffset
-                return (index + 1, column)
+                return (index + 1, offset - currentOffset)
             }
 
             currentOffset += lineLength
-            line = index + 2
         }
 
         return (lines.count, lines.last?.count ?? 0)
