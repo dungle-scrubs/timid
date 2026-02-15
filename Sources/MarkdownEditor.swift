@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 
+/// NSViewRepresentable wrapping VimTextView with real-time markdown syntax highlighting.
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var vimMode: VimMode
@@ -10,8 +11,6 @@ struct MarkdownEditor: NSViewRepresentable {
     var onReady: ((VimTextView) -> Void)? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
-        vimLog("[makeNSView] called, text.count=\(text.count)")
-        // Create text container and layout manager properly
         let textStorage = NSTextStorage()
         let layoutManager = NSLayoutManager()
         textStorage.addLayoutManager(layoutManager)
@@ -41,7 +40,6 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
 
-        // Setup vim bridge
         let bridge = VimBridge()
         textView.vimBridge = bridge
         context.coordinator.vimBridge = bridge
@@ -68,13 +66,11 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
 
-        // Initial sync - load current text into vim
         if !text.isEmpty {
             textView.string = text
             bridge.syncFromTextView(text)
         }
 
-        // Wire up escape in normal mode to close
         textView.onEscapeInNormalMode = onEscape
 
         onReady?(textView)
@@ -83,11 +79,7 @@ struct MarkdownEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        vimLog("[updateNSView] called, text.count=\(text.count)")
-        guard let textView = scrollView.documentView as? VimTextView else {
-            vimLog("[updateNSView] guard failed - no VimTextView")
-            return
-        }
+        guard let textView = scrollView.documentView as? VimTextView else { return }
 
         // Keep coordinator's parent reference up to date with current struct instance
         context.coordinator.parent = self
@@ -96,9 +88,6 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.onEscapeInNormalMode = onEscape
 
         if textView.string != text {
-            vimLog("[updateNSView] textView.string != text")
-            vimLog("[updateNSView] textView: '\(textView.string.prefix(50))...'")
-            vimLog("[updateNSView] text binding: '\(text.prefix(50))...'")
             let selectedRanges = textView.selectedRanges
             textView.string = text
             textView.selectedRanges = selectedRanges
@@ -116,23 +105,26 @@ struct MarkdownEditor: NSViewRepresentable {
         var vimBridge: VimBridge?
         weak var textView: VimTextView?
 
+        // Cache compiled regex patterns — reused on every keystroke
+        private static let boldRegex = try? NSRegularExpression(pattern: #"\*\*(.+?)\*\*"#)
+        private static let italicRegex = try? NSRegularExpression(pattern: #"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)"#)
+        private static let codeRegex = try? NSRegularExpression(pattern: #"`([^`]+)`"#)
+        private static let linkRegex = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\([^\)]+\)"#)
+
         init(_ parent: MarkdownEditor) {
             self.parent = parent
         }
 
         func textDidChange(_ notification: Notification) {
-            vimLog("[textDidChange] fired, object type: \(type(of: notification.object))")
-            guard let textView = notification.object as? VimTextView else {
-                vimLog("[textDidChange] guard failed - not VimTextView")
-                return
-            }
-            vimLog("[textDidChange] setting parent.text to: '\(textView.string.prefix(50))...'")
+            guard let textView = notification.object as? VimTextView else { return }
             parent.text = textView.string
             parent.onTextChange(textView.string)
             applyHighlighting(to: textView)
             textView.syncToVimBuffer()
         }
 
+        /// Applies markdown syntax highlighting to the text view's attributed string.
+        /// Handles headings (H1-H3), bold, italic, inline code, and links.
         func applyHighlighting(to textView: NSTextView) {
             let text = textView.string
             let fullRange = NSRange(location: 0, length: (text as NSString).length)
@@ -140,7 +132,6 @@ struct MarkdownEditor: NSViewRepresentable {
 
             textStorage.beginEditing()
 
-            // Reset to default
             textStorage.setAttributes([
                 .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
                 .foregroundColor: NSColor.labelColor
@@ -153,79 +144,82 @@ struct MarkdownEditor: NSViewRepresentable {
                 let lineLength = (line as NSString).length
                 let lineRange = NSRange(location: location, length: lineLength)
 
-                // H1 - # heading
                 if line.hasPrefix("# ") {
                     textStorage.addAttributes([
                         .font: NSFont.monospacedSystemFont(ofSize: 22, weight: .bold),
                         .foregroundColor: NSColor.labelColor
                     ], range: lineRange)
-                }
-                // H2 - ## heading
-                else if line.hasPrefix("## ") {
+                } else if line.hasPrefix("## ") {
                     textStorage.addAttributes([
                         .font: NSFont.monospacedSystemFont(ofSize: 18, weight: .bold),
                         .foregroundColor: NSColor.labelColor
                     ], range: lineRange)
-                }
-                // H3 - ### heading
-                else if line.hasPrefix("### ") {
+                } else if line.hasPrefix("### ") {
                     textStorage.addAttributes([
                         .font: NSFont.monospacedSystemFont(ofSize: 16, weight: .semibold),
                         .foregroundColor: NSColor.labelColor
                     ], range: lineRange)
                 }
 
-                location += lineLength + 1 // +1 for newline
+                location += lineLength + 1
             }
 
-            // Inline patterns
-            applyPattern(#"\*\*(.+?)\*\*"#, to: textStorage, in: text, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .bold)
-            ])
+            // Inline patterns using cached regex
+            if let regex = Self.boldRegex {
+                applyPattern(regex, to: textStorage, in: text, attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .bold)
+                ])
+            }
 
-            applyPattern(#"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)"#, to: textStorage, in: text, attributes: [
-                .font: NSFont(descriptor: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular).fontDescriptor.withSymbolicTraits(.italic), size: 14) ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-            ])
+            if let regex = Self.italicRegex {
+                let italicFont = NSFont(
+                    descriptor: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+                        .fontDescriptor.withSymbolicTraits(.italic),
+                    size: 14
+                ) ?? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+                applyPattern(regex, to: textStorage, in: text, attributes: [.font: italicFont])
+            }
 
-            applyPattern(#"`([^`]+)`"#, to: textStorage, in: text, attributes: [
-                .foregroundColor: NSColor.systemPink,
-                .backgroundColor: NSColor.quaternaryLabelColor
-            ])
+            if let regex = Self.codeRegex {
+                applyPattern(regex, to: textStorage, in: text, attributes: [
+                    .foregroundColor: NSColor.systemPink,
+                    .backgroundColor: NSColor.quaternaryLabelColor
+                ])
+            }
 
-            applyPattern(#"\[([^\]]+)\]\([^\)]+\)"#, to: textStorage, in: text, attributes: [
-                .foregroundColor: NSColor.systemBlue
-            ])
+            if let regex = Self.linkRegex {
+                applyPattern(regex, to: textStorage, in: text, attributes: [
+                    .foregroundColor: NSColor.systemBlue
+                ])
+            }
 
             textStorage.endEditing()
         }
 
-        private func applyPattern(_ pattern: String, to textStorage: NSTextStorage, in text: String, attributes: [NSAttributedString.Key: Any]) {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return }
+        /// @param regex Pre-compiled regex pattern to match.
+        /// @param textStorage The text storage to apply attributes to.
+        /// @param text The plain text to search.
+        /// @param attributes Attributes to apply to each match.
+        private func applyPattern(_ regex: NSRegularExpression, to textStorage: NSTextStorage, in text: String, attributes: [NSAttributedString.Key: Any]) {
             let fullRange = NSRange(location: 0, length: (text as NSString).length)
-            let matches = regex.matches(in: text, options: [], range: fullRange)
-
-            for match in matches {
+            for match in regex.matches(in: text, range: fullRange) {
                 textStorage.addAttributes(attributes, range: match.range)
             }
         }
     }
 }
 
+/// Compact vim mode badge shown at the bottom-left of the editor.
 struct VimModeIndicator: View {
     let mode: VimMode
 
     private var backgroundColor: Color {
         switch mode {
-        case .normal:
-            return .blue
-        case .insert:
-            return .green
-        case .visual, .visualLine, .visualBlock:
-            return .purple
-        case .command:
-            return .orange
-        case .replace:
-            return .red
+        case .normal: return .blue
+        case .insert: return .green
+        case .visual, .visualLine, .visualBlock: return .purple
+        case .command: return .orange
+        case .replace: return .red
         }
     }
 
